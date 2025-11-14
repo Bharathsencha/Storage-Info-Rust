@@ -1,0 +1,662 @@
+use crate::gui::{disk_scanner::scan_disks, stat_card};
+use crate::models::{AttributeStatus, DiskInfo};
+use eframe::egui;
+use std::sync::Arc;
+
+pub struct AppState {
+    drives: Vec<Arc<DiskInfo>>,
+    selected: usize,
+    last_error: Option<String>,
+}
+
+impl AppState {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cc.egui_ctx.set_visuals(egui::Visuals::light());
+
+        let mut s = Self {
+            drives: Vec::new(),
+            selected: 0,
+            last_error: None,
+        };
+        s.refresh();
+        s
+    }
+
+    fn refresh(&mut self) {
+        self.last_error = None;
+        match scan_disks() {
+            Ok(list) => {
+                self.drives = list.into_iter().map(Arc::new).collect();
+                if self.selected >= self.drives.len() && !self.drives.is_empty() {
+                    self.selected = 0;
+                }
+            }
+            Err(e) => {
+                self.drives.clear();
+                self.last_error = Some(e);
+            }
+        }
+    }
+}
+
+impl eframe::App for AppState {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Left sidebar for drive/partition selection
+        egui::SidePanel::left("drive_panel")
+            .resizable(false)
+            .exact_width(220.0)
+            .show(ctx, |ui| {
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    ui.heading("Storage");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button("🔄")
+                            .on_hover_text("Refresh")
+                            .clicked()
+                        {
+                            self.refresh();
+                        }
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                for (i, d) in self.drives.iter().enumerate() {
+                    let is_selected = self.selected == i;
+
+                    // Drive header
+                    let frame = if is_selected {
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(220, 235, 255))
+                            .stroke(egui::Stroke::new(
+                                2.0,
+                                egui::Color32::from_rgb(70, 130, 220),
+                            ))
+                            .rounding(8.0)
+                            .inner_margin(12.0)
+                    } else {
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(250, 250, 250))
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(220)))
+                            .rounding(8.0)
+                            .inner_margin(12.0)
+                    };
+
+                    let response = frame.show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(&d.dev).strong().size(14.0));
+                            ui.add_space(2.0);
+
+                            if let Some(model) = &d.model {
+                                ui.label(
+                                    egui::RichText::new(model)
+                                        .size(11.0)
+                                        .color(egui::Color32::from_gray(100)),
+                                );
+                            }
+
+                            ui.add_space(4.0);
+
+                            ui.horizontal(|ui| {
+                                let (color, text) = match d.health_percent {
+                                    Some(p) if p > 84 => {
+                                        (egui::Color32::from_rgb(0, 160, 0), format!("{}%", p))
+                                    }
+                                    Some(p) if p >= 50 => (
+                                        egui::Color32::from_rgb(220, 150, 0),
+                                        format!("{}%", p),
+                                    ),
+                                    Some(p) => {
+                                        (egui::Color32::from_rgb(200, 30, 30), format!("{}%", p))
+                                    }
+                                    None => (egui::Color32::GRAY, "?".to_string()),
+                                };
+
+                                ui.label(egui::RichText::new("●").color(color).size(12.0));
+                                ui.label(egui::RichText::new(text).size(11.0));
+
+                                if let Some(temp) = d.temp_c {
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.label(
+                                                egui::RichText::new(format!("{}°C", temp))
+                                                    .size(11.0)
+                                                    .color(egui::Color32::from_gray(100)),
+                                            );
+                                        },
+                                    );
+                                }
+                            });
+                        });
+                    });
+
+                    if response
+                        .response
+                        .interact(egui::Sense::click())
+                        .clicked()
+                    {
+                        self.selected = i;
+                    }
+
+                    ui.add_space(8.0);
+                }
+
+                if let Some(err) = &self.last_error {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                    ui.colored_label(egui::Color32::RED, err);
+                }
+            });
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(245, 247, 250)))
+            .show(ctx, |ui| {
+                if self.drives.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.heading("No drives detected");
+                            ui.add_space(8.0);
+                            ui.label("Make sure you have smartctl installed and run with sudo");
+                        });
+                    });
+                    return;
+                }
+
+                let di = self.drives[self.selected].as_ref();
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.add_space(20.0);
+
+                    // Header Card
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        egui::Frame::none()
+                            .fill(egui::Color32::WHITE)
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(230)))
+                            .rounding(12.0)
+                            .inner_margin(20.0)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width() - 40.0);
+
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.heading(
+                                            egui::RichText::new(
+                                                di.model.as_deref().unwrap_or("Unknown Drive"),
+                                            )
+                                            .size(22.0),
+                                        );
+
+                                        ui.add_space(4.0);
+
+                                        ui.horizontal(|ui| {
+                                            if let Some(cap) = &di.capacity_str {
+                                                ui.label(
+                                                    egui::RichText::new(cap)
+                                                        .size(16.0)
+                                                        .color(egui::Color32::from_gray(100)),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new("•")
+                                                        .color(egui::Color32::from_gray(150)),
+                                                );
+                                            }
+                                            if let Some(protocol) = &di.protocol {
+                                                ui.label(
+                                                    egui::RichText::new(protocol)
+                                                        .size(16.0)
+                                                        .color(egui::Color32::from_gray(100)),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new("•")
+                                                        .color(egui::Color32::from_gray(150)),
+                                                );
+                                            }
+                                            if let Some(dtype) = &di.device_type {
+                                                ui.label(
+                                                    egui::RichText::new(dtype)
+                                                        .size(16.0)
+                                                        .color(egui::Color32::from_gray(100)),
+                                                );
+                                            }
+                                        });
+                                    });
+
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let (health_color, health_text) = match di.health_percent
+                                            {
+                                                Some(p) if p > 84 => {
+                                                    (egui::Color32::from_rgb(16, 185, 129), "Good")
+                                                }
+                                                Some(p) if p >= 50 => {
+                                                    (egui::Color32::from_rgb(245, 158, 11), "Warning")
+                                                }
+                                                Some(_) => {
+                                                    (egui::Color32::from_rgb(239, 68, 68), "Critical")
+                                                }
+                                                None => {
+                                                    (egui::Color32::from_gray(150), "Unknown")
+                                                }
+                                            };
+
+                                            egui::Frame::none()
+                                                .fill(health_color)
+                                                .rounding(8.0)
+                                                .inner_margin(egui::vec2(20.0, 10.0))
+                                                .show(ui, |ui| {
+                                                    ui.vertical_centered(|ui| {
+                                                        ui.label(
+                                                            egui::RichText::new(health_text)
+                                                                .color(egui::Color32::WHITE)
+                                                                .size(14.0)
+                                                                .strong(),
+                                                        );
+                                                        if let Some(p) = di.health_percent {
+                                                            ui.label(
+                                                                egui::RichText::new(format!(
+                                                                    "{}%", p
+                                                                ))
+                                                                .color(egui::Color32::WHITE)
+                                                                .size(28.0)
+                                                                .strong(),
+                                                            );
+                                                        }
+                                                    });
+                                                });
+                                        },
+                                    );
+                                });
+                            });
+                    });
+
+                    ui.add_space(15.0);
+
+                    // Stats Cards - 2 rows x 3 columns with fixed layout
+                    // Calculate card width before horizontal layout
+                    let total_available = ui.available_width();
+                    let card_width = (total_available - 70.0) / 3.0; // 20px left + 20px right + 30px gaps (15+15)
+                    
+                    // First Row
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+
+                        // CARD 1 ->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                        stat_card(
+                            ui,
+                            card_width,
+                            "Temperature",
+                            &di.temp_c
+                                .map(|t| format!("{}°C", t))
+                                .unwrap_or("--".into()),
+                            egui::Color32::from_rgb(59, 130, 246),
+                        );
+
+                        ui.add_space(15.0);
+
+                        // CARD 2 ->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                        stat_card(
+                            ui,
+                            card_width,
+                            "Power On Hours",
+                            &di.power_on_hours
+                                .map(|h| format!("{}", h))
+                                .unwrap_or("--".into()),
+                            egui::Color32::from_rgb(139, 92, 246),
+                        );
+
+                        ui.add_space(15.0);
+
+                        // CARD 3 ->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                        stat_card(
+                            ui,
+                            card_width,
+                            "Data Written",
+                            &di.data_written_tb
+                                .map(|t| format!("{:.1} TB", t))
+                                .unwrap_or("--".into()),
+                            egui::Color32::from_rgb(236, 72, 153),
+                        );
+                        
+                        ui.add_space(20.0);
+                    });
+
+                    ui.add_space(15.0);
+
+                    // Second Row
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+
+                        // CARD 4 ->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                        stat_card(
+                            ui,
+                            card_width,
+                            "Data Read",
+                            &di.data_read_tb
+                                .map(|t| format!("{:.1} TB", t))
+                                .unwrap_or("--".into()),
+                            egui::Color32::from_rgb(34, 197, 94),
+                        );
+
+                        ui.add_space(15.0);
+
+                        // CARD 5 ->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                        stat_card(
+                            ui,
+                            card_width,
+                            "Power Cycles",
+                            &di.power_cycles
+                                .map(|c| c.to_string())
+                                .unwrap_or("--".into()),
+                            egui::Color32::from_rgb(251, 146, 60),
+                        );
+
+                        ui.add_space(15.0);
+
+                        // CARD 6 ->>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                        stat_card(
+                            ui,
+                            card_width,
+                            "Unsafe Shutdowns",
+                            &di.unsafe_shutdowns
+                                .map(|us| us.to_string())
+                                .unwrap_or("--".into()),
+                            egui::Color32::from_rgb(168, 85, 247),
+                        );
+                        
+                        ui.add_space(20.0);
+                    });
+
+                    ui.add_space(15.0);
+
+                    // Partitions Card (if any)
+                    if !di.partitions.is_empty() {
+                        ui.add_space(20.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(20.0);
+                            egui::Frame::none()
+                                .fill(egui::Color32::WHITE)
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(230)))
+                                .rounding(12.0)
+                                .inner_margin(20.0)
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width() - 40.0);
+
+                                    ui.label(
+                                        egui::RichText::new("Partitions").size(16.0).strong(),
+                                    );
+                                    ui.add_space(12.0);
+
+                                    egui::Grid::new("partitions_grid")
+                                        .num_columns(6)
+                                        .spacing([15.0, 8.0])
+                                        .striped(true)
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new("Mount Point")
+                                                    .strong()
+                                                    .color(egui::Color32::from_gray(100)),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new("Type")
+                                                    .strong()
+                                                    .color(egui::Color32::from_gray(100)),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new("Total")
+                                                    .strong()
+                                                    .color(egui::Color32::from_gray(100)),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new("Used")
+                                                    .strong()
+                                                    .color(egui::Color32::from_gray(100)),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new("Free")
+                                                    .strong()
+                                                    .color(egui::Color32::from_gray(100)),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new("Usage")
+                                                    .strong()
+                                                    .color(egui::Color32::from_gray(100)),
+                                            );
+                                            ui.end_row();
+
+                                            for part in &di.partitions {
+                                                ui.label(&part.mount_point);
+                                                ui.label(&part.fs_type);
+                                                ui.label(format!("{:.1} GB", part.total_gb));
+                                                ui.label(format!("{:.1} GB", part.used_gb));
+                                                ui.label(format!("{:.1} GB", part.free_gb));
+
+                                                let usage_color = if part.used_percent > 90.0 {
+                                                    egui::Color32::from_rgb(239, 68, 68)
+                                                } else if part.used_percent > 75.0 {
+                                                    egui::Color32::from_rgb(245, 158, 11)
+                                                } else {
+                                                    egui::Color32::from_rgb(34, 197, 94)
+                                                };
+
+                                                ui.colored_label(
+                                                    usage_color,
+                                                    format!("{:.1}%", part.used_percent),
+                                                );
+                                                ui.end_row();
+                                            }
+                                        });
+                                });
+                            ui.add_space(20.0);
+                        });
+
+                        ui.add_space(15.0);
+                    }
+
+                    // Drive Information Card
+                    ui.add_space(5.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        egui::Frame::none()
+                            .fill(egui::Color32::WHITE)
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(230)))
+                            .rounding(12.0)
+                            .inner_margin(20.0)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width() - 40.0);
+
+                                ui.label(
+                                    egui::RichText::new("Drive Information").size(18.0).strong(),
+                                );
+                                ui.add_space(12.0);
+
+                                egui::Grid::new("info_grid")
+                                    .num_columns(6)
+                                    .spacing([20.0, 8.0])
+                                    .striped(true)
+                                    .show(ui, |ui| {
+                                        // Header row
+                                        ui.label(
+                                            egui::RichText::new("Device")
+                                                .strong()
+                                                .color(egui::Color32::from_gray(100)),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("Serial")
+                                                .strong()
+                                                .color(egui::Color32::from_gray(100)),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("Firmware")
+                                                .strong()
+                                                .color(egui::Color32::from_gray(100)),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("Power Cycles")
+                                                .strong()
+                                                .color(egui::Color32::from_gray(100)),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("Type")
+                                                .strong()
+                                                .color(egui::Color32::from_gray(100)),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("Unsafe Shutdowns")
+                                                .strong()
+                                                .color(egui::Color32::from_gray(100)),
+                                        );
+                                        ui.end_row();
+
+                                        // Data row
+                                        ui.label(&di.dev);
+                                        ui.label(di.serial.as_deref().unwrap_or("--"));
+                                        ui.label(di.firmware.as_deref().unwrap_or("--"));
+                                        ui.label(
+                                            di.power_cycles
+                                                .map(|c| c.to_string())
+                                                .unwrap_or("--".into()),
+                                        );
+
+                                        if let Some(rpm) = di.rotation_rpm {
+                                            ui.label(format!("{} RPM", rpm));
+                                        } else {
+                                            ui.label("Solid State Drive");
+                                        }
+
+                                        ui.label(
+                                            di.unsafe_shutdowns
+                                                .map(|us| us.to_string())
+                                                .unwrap_or("--".into()),
+                                        );
+                                        ui.end_row();
+                                    });
+                            });
+                        ui.add_space(20.0);
+                    });
+
+                    ui.add_space(15.0);
+
+                    // SMART Attributes Table
+                    if !di.smart_attributes.is_empty() {
+                        ui.add_space(5.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(20.0);
+                            egui::Frame::none()
+                                .fill(egui::Color32::WHITE)
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(230)))
+                                .rounding(12.0)
+                                .inner_margin(20.0)
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width() - 40.0);
+
+                                    ui.label(
+                                        egui::RichText::new("SMART Attributes").size(16.0).strong(),
+                                    );
+                                    ui.add_space(12.0);
+
+                                    egui::ScrollArea::vertical()
+                                        .max_height(400.0)
+                                        .show(ui, |ui| {
+                                            egui::Grid::new("smart_grid")
+                                                .striped(true)
+                                                .spacing([15.0, 8.0])
+                                                .min_col_width(50.0)
+                                                .show(ui, |ui| {
+                                                    ui.label(
+                                                        egui::RichText::new("ID")
+                                                            .strong()
+                                                            .color(egui::Color32::from_gray(100)),
+                                                    );
+                                                    ui.label(
+                                                        egui::RichText::new("Attribute")
+                                                            .strong()
+                                                            .color(egui::Color32::from_gray(100)),
+                                                    );
+                                                    ui.label(
+                                                        egui::RichText::new("Current")
+                                                            .strong()
+                                                            .color(egui::Color32::from_gray(100)),
+                                                    );
+                                                    ui.label(
+                                                        egui::RichText::new("Worst")
+                                                            .strong()
+                                                            .color(egui::Color32::from_gray(100)),
+                                                    );
+                                                    ui.label(
+                                                        egui::RichText::new("Threshold")
+                                                            .strong()
+                                                            .color(egui::Color32::from_gray(100)),
+                                                    );
+                                                    ui.label(
+                                                        egui::RichText::new("Raw Value")
+                                                            .strong()
+                                                            .color(egui::Color32::from_gray(100)),
+                                                    );
+                                                    ui.label(
+                                                        egui::RichText::new("Status")
+                                                            .strong()
+                                                            .color(egui::Color32::from_gray(100)),
+                                                    );
+                                                    ui.end_row();
+
+                                                    for attr in &di.smart_attributes {
+                                                        ui.label(&attr.id);
+                                                        ui.label(&attr.name);
+                                                        ui.label(&attr.current);
+                                                        ui.label(&attr.worst);
+                                                        ui.label(&attr.threshold);
+                                                        ui.label(&attr.raw_value);
+
+                                                        let (color, text) = match attr.status {
+                                                            AttributeStatus::Good => (
+                                                                egui::Color32::from_rgb(
+                                                                    16, 185, 129,
+                                                                ),
+                                                                "Good",
+                                                            ),
+                                                            AttributeStatus::Warning => (
+                                                                egui::Color32::from_rgb(
+                                                                    245, 158, 11,
+                                                                ),
+                                                                "Warning",
+                                                            ),
+                                                            AttributeStatus::Critical => (
+                                                                egui::Color32::from_rgb(
+                                                                    239, 68, 68,
+                                                                ),
+                                                                "Critical",
+                                                            ),
+                                                        };
+
+                                                        ui.horizontal(|ui| {
+                                                            ui.label(
+                                                                egui::RichText::new("●").color(color),
+                                                            );
+                                                            ui.label(
+                                                                egui::RichText::new(text)
+                                                                    .color(color),
+                                                            );
+                                                        });
+
+                                                        ui.end_row();
+                                                    }
+                                                });
+                                        });
+                                });
+                            ui.add_space(20.0);
+                        });
+                    }
+
+                    ui.add_space(20.0);
+                });
+            });
+    }
+}

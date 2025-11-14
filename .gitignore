@@ -1,0 +1,39 @@
+# Cargo build files
+/target/
+**/*.rs.bk
+
+# Backup and temp files
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# IDEs and editors
+.idea/
+.vscode/
+*.iml
+
+# Logs
+*.log
+
+# Rust toolchain artifacts
+Cargo.lock
+
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.out
+
+# eframe/egui cache (if any)
+.egui/
+
+# System config or secret files
+.env
