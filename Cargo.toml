@@ -1,10 +1,10 @@
 [package]
 name = "ssd_info_cli"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 description = "SSD Information GUI Tool"
 license = "MIT"
-authors = ["Your Name <you@example.com>"]
+authors = ["Bharath <bharathsencha@duck.com>"]
 
 [dependencies]
 eframe = "0.29"
@@ -14,14 +14,12 @@ nix = "0.30.1"
 regex = "1.12.2"
 sysinfo = "0.37.2"
 
-#DEB PACKAGE CONFIGURATION
+# DEB PACKAGE CONFIGURATION
 [package.metadata.deb]
 maintainer = "Bharath <bharathsencha@duck.com>"
 section = "utils"
 priority = "optional"
 depends = "smartmontools, libgtk-3-0"
-
-# Copy the built binary to /usr/bin/
 assets = [
     ["target/release/ssd_info_cli", "usr/bin/", "755"]
 ]

@@ -37,3 +37,4 @@ Cargo.lock
 
 # System config or secret files
 .env
+Cargo.lock
