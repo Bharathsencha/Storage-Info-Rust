@@ -1,40 +1,53 @@
+// Main application state and UI rendering logic for the SSD Health Checker
+
+// Import disk scanning functionality
 use crate::gui::{disk_scanner::scan_disks, stat_card};
+// Import disk information models
 use crate::models::DiskInfo;
+// Import egui for UI rendering
 use eframe::egui;
+// Regex for parsing system command output
 use regex::Regex;
+// Command execution for reading system temperatures
 use std::process::Command;
+// Arc for thread-safe reference counting
 use std::sync::Arc;
+// Duration and Instant for time-based operations
 use std::time::{Duration, Instant};
 
 /// Main application state for the eframe app.
+/// Manages disk information, system temperatures, and UI state.
 pub struct AppState {
-    /// The discovered drives (wrapped in Arc for cheap cloning into UI).
+    /// The discovered drives wrapped in Arc for efficient cloning
     drives: Vec<Arc<DiskInfo>>,
 
-    /// Index of currently selected drive in `drives`.
+    /// Index of currently selected drive in the drives vector
     selected: usize,
 
-    /// Last error message (if any) from scanning drives.
+    /// Last error message if scanning drives failed
     last_error: Option<String>,
 
-    /// Cached CPU temperature (average) in Celsius.
+    /// Cached CPU temperature average in Celsius
     cpu_temp: Option<f32>,
 
-    /// Cached GPU temperature in Celsius.
+    /// Cached GPU temperature in Celsius
     gpu_temp: Option<f32>,
 
-    /// Instant when the last automatic refresh happened.
+    /// Timestamp of the last automatic refresh
     last_refresh: Instant,
 
-    /// How often to automatically refresh (seconds).
+    /// How often to automatically refresh drive data
     refresh_interval: Duration,
 }
 
 impl AppState {
-    /// Create a new app state. Sets light visuals, triggers an immediate refresh,
-    /// and initializes the periodic refresh timer.
+    /// Creates a new application state instance.
+    /// Sets light theme, performs initial data collection, and starts refresh timer.
+    ///
+    /// # Arguments
+    /// * `cc` - eframe creation context containing egui context
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Use light theme for consistent visuals.
+        // Configure light theme for consistent appearance
         cc.egui_ctx.set_visuals(egui::Visuals::light());
 
         let mut s = Self {
@@ -43,8 +56,10 @@ impl AppState {
             last_error: None,
             cpu_temp: None,
             gpu_temp: None,
-            last_refresh: Instant::now() - Duration::from_secs(10), // force immediate refresh
-            refresh_interval: Duration::from_secs(5), // auto refresh every 5 seconds
+            // Force immediate refresh by setting last refresh to 10 seconds ago
+            last_refresh: Instant::now() - Duration::from_secs(10),
+            // Automatically refresh data every 5 seconds
+            refresh_interval: Duration::from_secs(5),
         };
 
         // Perform initial data collection
@@ -54,49 +69,49 @@ impl AppState {
         s
     }
 
-    /// Refresh disk list by calling your `scan_disks` function.
-    /// On success we replace the drives vector; on error we clear drives
-    /// and store the error message for display.
+    /// Refreshes the disk list by calling scan_disks.
+    /// On success, updates the drives vector and adjusts selection if needed.
+    /// On error, clears the drives vector and stores the error message.
     fn refresh(&mut self) {
         self.last_error = None;
         match scan_disks() {
             Ok(list) => {
+                // Wrap each DiskInfo in Arc for efficient sharing
                 self.drives = list.into_iter().map(Arc::new).collect();
 
-                // If current selection is out of range after refresh, clamp to zero
+                // Clamp selection to valid range if drives changed
                 if !self.drives.is_empty() && self.selected >= self.drives.len() {
                     self.selected = 0;
                 }
 
-                // If no drives found, clear selection
+                // Reset selection if no drives found
                 if self.drives.is_empty() {
                     self.selected = 0;
                 }
             }
             Err(e) => {
+                // Clear drives and store error for display
                 self.drives.clear();
                 self.last_error = Some(e);
             }
         }
     }
 
-    /// Update CPU and GPU temperature readings using external commands.
-    ///
-    /// This function parses `sensors` output for CPU temps and `nvidia-smi`
-    /// output for NVIDIA GPU temperature. Failures are silently ignored
-    /// (fields remain `None`).
+    /// Updates CPU and GPU temperature readings using external commands.
+    /// Parses output from 'sensors' for CPU temperature and 'nvidia-smi' for GPU.
+    /// Failures are silently ignored, leaving temperature fields as None.
     fn update_system_temps(&mut self) {
-        // Update CPU temperature by parsing the `sensors` output (if available).
-        // We look for common labels: tctl, tdie, package, core and parse +XX.X°C.
+        // Parse CPU temperature from lm-sensors output
         if let Ok(output) = Command::new("sensors").output() {
             if let Ok(text) = String::from_utf8(output.stdout) {
-                // Regex captures numbers like +47.0°C or +47°C
+                // Regex to match temperature values like +47.0°C or +47°C
                 let temp_re = Regex::new(r"\+([0-9]+(?:\.[0-9]+)?)°C").unwrap();
                 let mut temps: Vec<f32> = Vec::new();
 
+                // Look for common CPU temperature labels
                 for line in text.lines() {
                     let lower = line.to_lowercase();
-                    // Only consider lines that most likely contain CPU temps.
+                    // Filter for lines containing CPU-related keywords
                     if lower.contains("tctl")
                         || lower.contains("tdie")
                         || lower.contains("package")
@@ -112,14 +127,14 @@ impl AppState {
                     }
                 }
 
-                // Compute simple average (if we found any values).
+                // Compute average of all found temperature values
                 if !temps.is_empty() {
                     self.cpu_temp = Some(temps.iter().sum::<f32>() / temps.len() as f32);
                 }
             }
         }
 
-        // Update GPU temperature using `nvidia-smi` if available.
+        // Parse GPU temperature from nvidia-smi
         if let Ok(output) = Command::new("nvidia-smi")
             .args(&["--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"])
             .output()
@@ -132,7 +147,8 @@ impl AppState {
         }
     }
 
-    /// Trigger a manual refresh and update temps; also update the last_refresh instant.
+    /// Triggers a manual refresh of disk data and system temperatures.
+    /// Also updates the last_refresh timestamp to reset the auto-refresh timer.
     fn manual_refresh(&mut self) {
         self.refresh();
         self.update_system_temps();
@@ -141,89 +157,121 @@ impl AppState {
 }
 
 impl eframe::App for AppState {
+    /// Main UI update function called every frame.
+    /// Handles automatic refresh, renders sidebar with drive list, and main content area.
+    ///
+    /// # Arguments
+    /// * `ctx` - egui context for rendering
+    /// * `_frame` - eframe frame (unused)
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Schedule a repaint so animations and the UI stay responsive.
-        // This is independent of the data-refresh frequency.
+        // Request repaint every second to keep UI responsive
         ctx.request_repaint_after(Duration::from_secs(1));
 
-        // If the refresh interval has elapsed, perform an automatic refresh.
+        // Check if it's time for automatic refresh
         if self.last_refresh.elapsed() >= self.refresh_interval {
             self.refresh();
             self.update_system_temps();
             self.last_refresh = Instant::now();
         }
 
-        // LEFT: Sidebar with drives list and manual refresh button
+        // LEFT SIDEBAR: Drive list with modern design similar to reference
         egui::SidePanel::left("drive_panel")
             .resizable(false)
             .exact_width(180.0)
             .show(ctx, |ui| {
                 ui.add_space(10.0);
 
-                // Title centered at the top
-                ui.vertical_centered(|ui| {
-                    ui.heading(egui::RichText::new("Drives").size(18.0).strong());
+                // Header with title and refresh button
+                ui.horizontal(|ui| {
+                    ui.heading(egui::RichText::new("Storage").size(18.0).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Refresh button with hover tooltip
+                        let refresh_btn = egui::Button::new(
+                            egui::RichText::new("🔄").size(14.0)
+                        )
+                        .frame(false);
+                        
+                        if ui.add(refresh_btn).on_hover_text("Refresh").clicked() {
+                            self.manual_refresh();
+                        }
+                    });
                 });
 
-                ui.add_space(12.0);
+                ui.add_space(8.0);
                 ui.separator();
-                ui.add_space(12.0);
+                ui.add_space(8.0);
 
-                // Drive entries
+                // Render each drive as a selectable card
                 for (i, d) in self.drives.iter().enumerate() {
                     let is_selected = self.selected == i;
 
-                    // Visual frame changes when selected.
+                    // Change appearance based on selection state
                     let frame = if is_selected {
+                        // Selected: light blue background with blue border
                         egui::Frame::none()
-                            .fill(egui::Color32::from_rgb(100, 180, 255))
+                            .fill(egui::Color32::from_rgb(220, 235, 255))
+                            .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(70, 130, 220)))
                             .rounding(8.0)
                             .inner_margin(12.0)
                     } else {
+                        // Unselected: light gray background with subtle border
                         egui::Frame::none()
-                            .fill(egui::Color32::from_rgb(240, 240, 245))
+                            .fill(egui::Color32::from_rgb(250, 250, 250))
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(220)))
                             .rounding(8.0)
                             .inner_margin(12.0)
                     };
 
-                    // Show device path and truncated model string
+                    // Render drive card showing device path, model, health, and temperature
                     let response = frame.show(ui, |ui| {
                         ui.vertical(|ui| {
-                            let text_color = if is_selected {
-                                egui::Color32::WHITE
-                            } else {
-                                egui::Color32::BLACK
-                            };
-
-                            // Device path (e.g., /dev/nvme0n1)
+                            // Display device path (e.g., /dev/nvme0n1)
                             ui.label(
                                 egui::RichText::new(&d.dev)
                                     .strong()
                                     .size(14.0)
-                                    .color(text_color),
                             );
+                            ui.add_space(2.0);
 
-                            // Display model if present (truncate for sidebar)
+                            // Display truncated model name if available
                             if let Some(model) = &d.model {
-                                let display = if model.len() > 20 {
-                                    format!("{}...", &model[..20])
-                                } else {
-                                    model.clone()
-                                };
                                 ui.label(
-                                    egui::RichText::new(display)
-                                        .size(10.0)
-                                        .color(if is_selected {
-                                            egui::Color32::from_gray(220)
-                                        } else {
-                                            egui::Color32::from_gray(100)
-                                        }),
+                                    egui::RichText::new(model)
+                                        .size(11.0)
+                                        .color(egui::Color32::from_gray(100))
                                 );
                             }
+
+                            ui.add_space(4.0);
+
+                            // Health indicator and temperature display
+                            ui.horizontal(|ui| {
+                                // Health status with colored dot and percentage
+                                let (color, text) = match d.health_percent {
+                                    Some(p) if p > 84 => (egui::Color32::from_rgb(0, 160, 0), format!("{}%", p)),
+                                    Some(p) if p >= 50 => (egui::Color32::from_rgb(220, 150, 0), format!("{}%", p)),
+                                    Some(p) => (egui::Color32::from_rgb(200, 30, 30), format!("{}%", p)),
+                                    None => (egui::Color32::GRAY, "?".to_string()),
+                                };
+
+                                ui.label(egui::RichText::new("●").color(color).size(12.0));
+                                ui.label(egui::RichText::new(text).size(11.0));
+
+                                // Temperature display on the right side
+                                if let Some(temp) = d.temp_c {
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{}°C", temp))
+                                                .size(11.0)
+                                                .color(egui::Color32::from_gray(100))
+                                        );
+                                    });
+                                }
+                            });
                         });
                     });
 
-                    // Select on click
+                    // Handle click to select this drive
                     if response.response.interact(egui::Sense::click()).clicked() {
                         self.selected = i;
                     }
@@ -231,41 +279,26 @@ impl eframe::App for AppState {
                     ui.add_space(8.0);
                 }
 
-                // Bottom-aligned manual refresh button
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                // Display error message if present
+                if let Some(err) = &self.last_error {
                     ui.add_space(10.0);
-
-                    let refresh_response = egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(59, 130, 246))
-                        .rounding(6.0)
-                        .inner_margin(egui::vec2(20.0, 8.0))
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new("Refresh")
-                                    .size(12.0)
-                                    .color(egui::Color32::WHITE),
-                            );
-                        });
-
-                    if refresh_response.response.interact(egui::Sense::click()).clicked() {
-                        self.manual_refresh();
-                    }
-
+                    ui.separator();
                     ui.add_space(10.0);
-                });
+                    ui.colored_label(egui::Color32::RED, err);
+                }
             });
 
-        // CENTRAL: Main display area
+        // CENTRAL PANEL: Main content area with drive details
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(250, 251, 252)))
+            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(245, 247, 250)))
             .show(ctx, |ui| {
-                // If we have no drives, show helpful guidance and return early.
+                // Show helpful message if no drives detected
                 if self.drives.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.vertical_centered(|ui| {
                             ui.heading("No drives detected");
                             ui.add_space(8.0);
-                            ui.label("Run with sudo and ensure smartctl is installed");
+                            ui.label("Make sure you have smartctl installed and run with sudo");
                             if let Some(err) = &self.last_error {
                                 ui.add_space(6.0);
                                 ui.label(format!("Last error: {}", err));
@@ -275,78 +308,88 @@ impl eframe::App for AppState {
                     return;
                 }
 
-                // Grab the currently selected DiskInfo
+                // Get currently selected drive information
                 let di = self.drives[self.selected].as_ref();
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.add_space(15.0);
+                    ui.add_space(20.0);
 
-                    // --- Model label (Option A): shown directly ABOVE the health bar, left-aligned ---
+                    // Header Card with model info and health badge
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
-                        if let Some(model) = &di.model {
-                            // Bold model label
-                            ui.label(
-                                egui::RichText::new(format!("Model: {}", model))
-                                    .strong()
-                                    .size(13.0),
-                            );
-                        } else {
-                            ui.label(egui::RichText::new("Model: --").strong().size(13.0));
-                        }
-                    });
-
-                    ui.add_space(8.0);
-
-                    // --- Health Status Bar ---
-                    ui.horizontal(|ui| {
-                        ui.add_space(20.0);
-
-                        let health_pct = di.health_percent.unwrap_or(0);
-                        let (bar_color, status_text) = match health_pct {
-                            p if p > 84 => (egui::Color32::from_rgb(34, 197, 94), "Good"),
-                            p if p >= 50 => (egui::Color32::from_rgb(245, 158, 11), "Warning"),
-                            _ => (egui::Color32::from_rgb(239, 68, 68), "Critical"),
-                        };
-
-                        // White rounded panel that contains the bar
                         egui::Frame::none()
                             .fill(egui::Color32::WHITE)
-                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(220)))
-                            .rounding(10.0)
-                            .inner_margin(15.0)
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(230)))
+                            .rounding(12.0)
+                            .inner_margin(10.0)
                             .show(ui, |ui| {
-                                // Make the bar occupy the available width minus outer gaps.
                                 ui.set_width(ui.available_width() - 40.0);
 
-                                let bar_width = ui.available_width();
-                                let rect = ui.allocate_space(egui::vec2(bar_width, 26.0)).1;
+                                ui.horizontal(|ui| {
+                                    // Left side: Model and drive details
+                                    ui.vertical(|ui| {
+                                        ui.heading(egui::RichText::new(
+                                            di.model.as_deref().unwrap_or("Unknown Drive")
+                                        ).size(22.0));
 
-                                // Background track
-                                ui.painter().rect_filled(rect, 8.0, egui::Color32::from_gray(230));
+                                        ui.add_space(4.0);
 
-                                // Filled portion based on percentage
-                                let filled_width = rect.width() * (health_pct as f32 / 100.0);
-                                let filled_rect = egui::Rect::from_min_size(rect.min, egui::vec2(filled_width, rect.height()));
-                                ui.painter().rect_filled(filled_rect, 8.0, bar_color);
+                                        // Drive details: capacity, protocol, type
+                                        ui.horizontal(|ui| {
+                                            if let Some(cap) = &di.capacity_str {
+                                                ui.label(egui::RichText::new(cap).size(16.0).color(egui::Color32::from_gray(100)));
+                                                ui.label(egui::RichText::new("•").color(egui::Color32::from_gray(150)));
+                                            }
+                                            if let Some(protocol) = &di.protocol {
+                                                ui.label(egui::RichText::new(protocol).size(16.0).color(egui::Color32::from_gray(100)));
+                                                ui.label(egui::RichText::new("•").color(egui::Color32::from_gray(150)));
+                                            }
+                                            if let Some(dtype) = &di.device_type {
+                                                ui.label(egui::RichText::new(dtype).size(16.0).color(egui::Color32::from_gray(100)));
+                                            }
+                                        });
+                                    });
 
-                                // Centered text inside the bar
-                                let text = format!("{} ({}%)", status_text, health_pct);
-                                ui.painter().text(
-                                    rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    text,
-                                    egui::FontId::new(15.0, egui::FontFamily::Proportional),
-                                    egui::Color32::WHITE,
-                                );
+                                    // Right side: Health badge
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        let (health_color, health_text) = match di.health_percent {
+                                            Some(p) if p > 84 => (egui::Color32::from_rgb(16, 185, 129), "Good"),
+                                            Some(p) if p >= 50 => (egui::Color32::from_rgb(245, 158, 11), "Warning"),
+                                            Some(_) => (egui::Color32::from_rgb(239, 68, 68), "Critical"),
+                                            None => (egui::Color32::from_gray(150), "Unknown"),
+                                        };
+
+                                        egui::Frame::none()
+                                            .fill(health_color)
+                                            .rounding(8.0)
+                                            .inner_margin(egui::vec2(20.0, 10.0))
+                                            .show(ui, |ui| {
+                                                ui.vertical_centered(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(health_text)
+                                                            .color(egui::Color32::WHITE)
+                                                            .size(14.0)
+                                                            .strong()
+                                                    );
+                                                    if let Some(p) = di.health_percent {
+                                                        ui.label(
+                                                            egui::RichText::new(format!("{}%", p))
+                                                                .color(egui::Color32::WHITE)
+                                                                .size(28.0)
+                                                                .strong()
+                                                        );
+                                                    }
+                                                });
+                                            });
+                                    });
+                                });
                             });
-
                         ui.add_space(20.0);
                     });
 
-                    ui.add_space(12.0);
+                    ui.add_space(15.0);
 
-                    // --- Partition table 
+                    // Partition table showing mount points and space usage
                     if !di.partitions.is_empty() {
                         ui.horizontal(|ui| {
                             ui.add_space(20.0);
@@ -361,23 +404,25 @@ impl eframe::App for AppState {
                                     ui.label(egui::RichText::new("Partitions").size(14.0).strong());
                                     ui.add_space(8.0);
 
+                                    // Grid layout for partition data
                                     egui::Grid::new("part_grid")
                                         .striped(true)
                                         .spacing([25.0, 10.0])
                                         .show(ui, |ui| {
-                                            // Compute some column width based on available space
+                                            // Calculate column widths
                                             let total_cols = 7.0;
                                             let col_width = ui.available_width() / total_cols;
 
-                                            // Headers
+                                            // Table headers
                                             for header in &["Partition", "Mount point", "Type", "Total", "Used", "Free", "Free%"] {
                                                 ui.set_min_width(col_width);
                                                 ui.label(egui::RichText::new(*header).strong().size(11.0));
                                             }
                                             ui.end_row();
 
-                                            // Each partition row
+                                            // Each partition row with usage statistics
                                             for part in &di.partitions {
+                                                // Extract partition name from mount point
                                                 let partition_name =
                                                     part.mount_point.rsplit('/').next().unwrap_or(&part.mount_point).to_string();
 
@@ -399,13 +444,14 @@ impl eframe::App for AppState {
                                                 ui.set_min_width(col_width);
                                                 ui.label(egui::RichText::new(format!("{:.1} GB", part.free_gb)).size(11.0));
 
+                                                // Calculate free percentage and color code it
                                                 let free_pct = 100.0 - part.used_percent;
                                                 let color = if free_pct < 10.0 {
-                                                    egui::Color32::from_rgb(239, 68, 68)
+                                                    egui::Color32::from_rgb(239, 68, 68)  // Red: critical
                                                 } else if free_pct < 25.0 {
-                                                    egui::Color32::from_rgb(245, 158, 11)
+                                                    egui::Color32::from_rgb(245, 158, 11)  // Orange: warning
                                                 } else {
-                                                    egui::Color32::from_rgb(34, 197, 94)
+                                                    egui::Color32::from_rgb(34, 197, 94)   // Green: good
                                                 };
 
                                                 ui.set_min_width(col_width);
@@ -421,7 +467,7 @@ impl eframe::App for AppState {
                         ui.add_space(12.0);
                     }
 
-                    // --- Drive information card ---
+                    // Drive information card showing serial, firmware, and type
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
                         egui::Frame::none()
@@ -439,11 +485,13 @@ impl eframe::App for AppState {
                                     .striped(true)
                                     .spacing([15.0, 6.0])
                                     .show(ui, |ui| {
+                                        // Headers
                                         for header in &["Serial no.", "Firmware", "Type"] {
                                             ui.label(egui::RichText::new(*header).strong().size(11.0));
                                         }
                                         ui.end_row();
 
+                                        // Values
                                         ui.label(egui::RichText::new(di.serial.as_deref().unwrap_or("--")).size(11.0));
                                         ui.label(egui::RichText::new(di.firmware.as_deref().unwrap_or("--")).size(11.0));
                                         ui.label(egui::RichText::new(di.device_type.as_deref().unwrap_or("--")).size(11.0));
@@ -455,15 +503,16 @@ impl eframe::App for AppState {
 
                     ui.add_space(12.0);
 
-                    // --- Stats cards (3 columns per row) ---
+                    // Statistics cards displayed in a 3-column grid
                     let card_width = 283.0;
                     let card_spacing = 11.0;
                     let card_height = 75.0;
 
-                    // Row 1: SSD Temp, CPU Temp, GPU Temp
+                    // Row 1: Temperature readings
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
 
+                        // SSD temperature from SMART data
                         stat_card(
                             ui,
                             card_width,
@@ -475,6 +524,7 @@ impl eframe::App for AppState {
 
                         ui.add_space(card_spacing);
 
+                        // CPU temperature from sensors command
                         stat_card(
                             ui,
                             card_width,
@@ -486,6 +536,7 @@ impl eframe::App for AppState {
 
                         ui.add_space(card_spacing);
 
+                        // GPU temperature from nvidia-smi
                         stat_card(
                             ui,
                             card_width,
@@ -498,10 +549,11 @@ impl eframe::App for AppState {
 
                     ui.add_space(10.0);
 
-                    // Row 2: Data written, Data read, Power on hours
+                    // Row 2: Data usage statistics
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
 
+                        // Total data written to drive
                         stat_card(
                             ui,
                             card_width,
@@ -513,6 +565,7 @@ impl eframe::App for AppState {
 
                         ui.add_space(card_spacing);
 
+                        // Total data read from drive
                         stat_card(
                             ui,
                             card_width,
@@ -524,6 +577,7 @@ impl eframe::App for AppState {
 
                         ui.add_space(card_spacing);
 
+                        // Total hours drive has been powered on
                         stat_card(
                             ui,
                             card_width,
@@ -536,10 +590,11 @@ impl eframe::App for AppState {
 
                     ui.add_space(10.0);
 
-                    // Row 3: Power cycles, Unsafe shutdowns, Rotation speed
+                    // Row 3: Power and rotation statistics
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
 
+                        // Number of power on/off cycles
                         stat_card(
                             ui,
                             card_width,
@@ -551,6 +606,7 @@ impl eframe::App for AppState {
 
                         ui.add_space(card_spacing);
 
+                        // Count of unsafe shutdowns (power loss events)
                         stat_card(
                             ui,
                             card_width,
@@ -562,6 +618,7 @@ impl eframe::App for AppState {
 
                         ui.add_space(card_spacing);
 
+                        // Rotation speed for HDDs, or "SSD Detected" for SSDs
                         stat_card(
                             ui,
                             card_width,
